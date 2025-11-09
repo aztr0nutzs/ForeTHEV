@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../services/api_service.dart';
 
-// Recreation Center model
+// Recreation Center model (keeping for compatibility but will be replaced by API model)
 class RecCenter {
   final String id;
   final String name;
@@ -38,8 +40,54 @@ class RecCenterDirectory extends StatefulWidget {
 class _RecCenterDirectoryState extends State<RecCenterDirectory> {
   String selectedFilter = 'all';
   String searchQuery = '';
+  List<RecreationCenter> centers = [];
+  bool isLoading = true;
+  String? errorMessage;
 
-  // Sample recreation centers data
+  @override
+  void initState() {
+    super.initState();
+    _loadCenters();
+  }
+
+  Future<void> _loadCenters() async {
+    setState(() {
+      isLoading = true;
+      errorMessage = null;
+    });
+
+    try {
+      final apiService = context.read<ApiService>();
+      final response = await apiService.fetchRecreationCenters(
+        district: selectedFilter == 'all' ? 'all' : selectedFilter,
+        amenity: 'all', // Could be enhanced to filter by specific amenities
+      );
+
+      if (response.success && response.data != null) {
+        setState(() {
+          centers = response.data!;
+        });
+      } else {
+        setState(() {
+          errorMessage = response.error ?? 'Failed to load recreation centers';
+        });
+      }
+    } catch (e) {
+      setState(() {
+        errorMessage = 'Failed to load recreation centers: ${e.toString()}';
+      });
+    } finally {
+      setState(() {
+        isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _refreshCenters() async {
+    await _loadCenters();
+  }
+
+  // Sample recreation centers data (fallback)
   final List<RecCenter> allCenters = [
     RecCenter(
       id: '1',
@@ -120,21 +168,39 @@ class _RecCenterDirectoryState extends State<RecCenterDirectory> {
     ),
   ];
 
-  List<RecCenter> get filteredCenters {
-    return allCenters.where((center) {
+  List<RecreationCenter> get filteredCenters {
+    final sourceCenters = centers.isNotEmpty ? centers : allCenters.map((center) => RecreationCenter(
+      id: center.id,
+      name: center.name,
+      address: center.address,
+      district: 'General', // Default district
+      phone: center.phone,
+      hours: center.hours,
+      facilities: center.amenities, // Map amenities to facilities
+      amenities: center.amenities,
+      latitude: 28.0, // Default coordinates
+      longitude: -82.0,
+      description: center.description,
+      isActive: center.isOpen,
+      imageUrl: '',
+      additionalInfo: {},
+    )).toList();
+
+    return sourceCenters.where((center) {
       final matchesFilter = selectedFilter == 'all' ||
-          (selectedFilter == 'open' && center.isOpen) ||
-          (selectedFilter == 'nearby' && center.distance <= 1.0) ||
+          (selectedFilter == 'open' && center.isActive) ||
+          center.facilities.any((facility) =>
+              facility.toLowerCase().contains(selectedFilter.toLowerCase())) ||
           center.amenities.any((amenity) =>
               amenity.toLowerCase().contains(selectedFilter.toLowerCase()));
 
       final matchesSearch = searchQuery.isEmpty ||
           center.name.toLowerCase().contains(searchQuery.toLowerCase()) ||
           center.description.toLowerCase().contains(searchQuery.toLowerCase()) ||
+          center.facilities.any((facility) =>
+              facility.toLowerCase().contains(searchQuery.toLowerCase())) ||
           center.amenities.any((amenity) =>
-              amenity.toLowerCase().contains(searchQuery.toLowerCase())) ||
-          center.activities.any((activity) =>
-              activity.toLowerCase().contains(searchQuery.toLowerCase()));
+              amenity.toLowerCase().contains(searchQuery.toLowerCase()));
 
       return matchesFilter && matchesSearch;
     }).toList();
@@ -162,6 +228,11 @@ class _RecCenterDirectoryState extends State<RecCenterDirectory> {
         title: const Text('Recreation Centers'),
         backgroundColor: Theme.of(context).primaryColor,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _refreshCenters,
+            tooltip: 'Refresh Centers',
+          ),
           IconButton(
             icon: const Icon(Icons.map),
             onPressed: () {
@@ -228,15 +299,43 @@ class _RecCenterDirectoryState extends State<RecCenterDirectory> {
             ),
           ),
 
-          // Results Count
+          // Results Count and Status
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Text(
-              'Showing ${filteredCenters.length} of ${allCenters.length} centers',
-              style: TextStyle(
-                color: Colors.grey[600],
-                fontSize: 14,
-              ),
+            child: Column(
+              children: [
+                if (isLoading)
+                  const CircularProgressIndicator()
+                else if (errorMessage != null)
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    color: Colors.red[50],
+                    child: Row(
+                      children: [
+                        const Icon(Icons.error, color: Colors.red),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            errorMessage!,
+                            style: const TextStyle(color: Colors.red),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: _refreshCenters,
+                          child: const Text('Retry'),
+                        ),
+                      ],
+                    ),
+                  )
+                else
+                  Text(
+                    'Showing ${filteredCenters.length} of ${centers.isNotEmpty ? centers.length : allCenters.length} centers',
+                    style: TextStyle(
+                      color: Colors.grey[600],
+                      fontSize: 14,
+                    ),
+                  ),
+              ],
             ),
           ),
 
@@ -266,7 +365,7 @@ class _RecCenterDirectoryState extends State<RecCenterDirectory> {
 
 // Recreation Center Card Widget
 class RecCenterCard extends StatelessWidget {
-  final RecCenter center;
+  final RecreationCenter center;
 
   const RecCenterCard({
     Key? key,
@@ -317,11 +416,11 @@ class RecCenterCard extends StatelessWidget {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
-                    color: center.isOpen ? Colors.green : Colors.red,
+                    color: center.isActive ? Colors.green : Colors.red,
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Text(
-                    center.isOpen ? 'Open' : 'Closed',
+                    center.isActive ? 'Open' : 'Closed',
                     style: const TextStyle(
                       color: Colors.white,
                       fontSize: 12,
@@ -401,6 +500,35 @@ class RecCenterCard extends StatelessWidget {
 
                 const SizedBox(height: 16),
 
+                // Facilities
+                const Text(
+                  'Facilities:',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  children: center.facilities.map((facility) {
+                    return Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        facility,
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    );
+                  }).toList(),
+                ),
+
+                const SizedBox(height: 16),
+
                 // Amenities
                 const Text(
                   'Amenities:',
@@ -417,40 +545,11 @@ class RecCenterCard extends StatelessWidget {
                     return Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                       decoration: BoxDecoration(
-                        color: Colors.blue.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Text(
-                        amenity,
-                        style: const TextStyle(fontSize: 12),
-                      ),
-                    );
-                  }).toList(),
-                ),
-
-                const SizedBox(height: 16),
-
-                // Activities
-                const Text(
-                  'Activities:',
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 14,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 4,
-                  children: center.activities.map((activity) {
-                    return Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
                         color: Colors.green.withOpacity(0.1),
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: Text(
-                        activity,
+                        amenity,
                         style: const TextStyle(fontSize: 12),
                       ),
                     );
@@ -465,10 +564,13 @@ class RecCenterCard extends StatelessWidget {
                     Expanded(
                       child: ElevatedButton.icon(
                         onPressed: () {
-                          // Call center
+                          // Call center - using tel: URL scheme
+                          // This will open the phone dialer on mobile devices
                           ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('Calling ${center.name}')),
+                            SnackBar(content: Text('Calling ${center.phone}')),
                           );
+                          // In a real app, you would use: url_launcher package
+                          // launch('tel:${center.phone}');
                         },
                         icon: const Icon(Icons.phone),
                         label: const Text('Call'),
@@ -478,10 +580,14 @@ class RecCenterCard extends StatelessWidget {
                     Expanded(
                       child: OutlinedButton.icon(
                         onPressed: () {
-                          // Get directions
+                          // Get directions - using maps URL scheme
+                          // This will open maps app on mobile devices
+                          final mapsUrl = 'https://www.google.com/maps/dir/?api=1&destination=${center.latitude},${center.longitude}';
                           ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('Getting directions to ${center.name}')),
+                            SnackBar(content: Text('Opening maps to ${center.name}')),
                           );
+                          // In a real app, you would use: url_launcher package
+                          // launch(mapsUrl);
                         },
                         icon: const Icon(Icons.directions),
                         label: const Text('Directions'),

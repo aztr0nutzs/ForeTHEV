@@ -9,6 +9,7 @@ class ApiConfig {
   static const String baseUrl = 'https://api.thevillages.com'; // Placeholder - replace with actual API
   static const String newsEndpoint = '/api/news';
   static const String eventsEndpoint = '/api/events';
+  static const String recCentersEndpoint = '/api/rec-centers';
   static const Duration timeout = Duration(seconds: 30);
   static const int maxRetries = 3;
 }
@@ -64,6 +65,110 @@ class NewsArticle {
         'source': source,
         'url': url,
       };
+}
+
+// Recreation Center Model
+class RecreationCenter {
+  final String id;
+  final String name;
+  final String address;
+  final String district;
+  final String phone;
+  final Map<String, String> hours; // day -> time range
+  final List<String> facilities;
+  final List<String> amenities;
+  final double latitude;
+  final double longitude;
+  final String description;
+  final bool isActive;
+  final String imageUrl;
+  final Map<String, dynamic> additionalInfo;
+
+  RecreationCenter({
+    required this.id,
+    required this.name,
+    required this.address,
+    required this.district,
+    required this.phone,
+    required this.hours,
+    required this.facilities,
+    required this.amenities,
+    required this.latitude,
+    required this.longitude,
+    required this.description,
+    required this.isActive,
+    required this.imageUrl,
+    required this.additionalInfo,
+  });
+
+  factory RecreationCenter.fromJson(Map<String, dynamic> json) => RecreationCenter(
+        id: json['id']?.toString() ?? '',
+        name: json['name'] ?? 'Unknown Center',
+        address: json['address'] ?? '',
+        district: json['district'] ?? 'General',
+        phone: json['phone'] ?? '',
+        hours: Map<String, String>.from(json['hours'] ?? {}),
+        facilities: List<String>.from(json['facilities'] ?? []),
+        amenities: List<String>.from(json['amenities'] ?? []),
+        latitude: (json['latitude'] ?? 0.0).toDouble(),
+        longitude: (json['longitude'] ?? 0.0).toDouble(),
+        description: json['description'] ?? '',
+        isActive: json['isActive'] ?? true,
+        imageUrl: json['imageUrl'] ?? '',
+        additionalInfo: Map<String, dynamic>.from(json['additionalInfo'] ?? {}),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'address': address,
+        'district': district,
+        'phone': phone,
+        'hours': hours,
+        'facilities': facilities,
+        'amenities': amenities,
+        'latitude': latitude,
+        'longitude': longitude,
+        'description': description,
+        'isActive': isActive,
+        'imageUrl': imageUrl,
+        'additionalInfo': additionalInfo,
+      };
+
+  // Helper methods
+  String getFormattedHours() {
+    if (hours.isEmpty) return 'Hours not available';
+
+    final today = DateTime.now().weekday;
+    final days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+    final todayKey = days[today - 1];
+
+    if (hours.containsKey(todayKey)) {
+      return 'Today: ${hours[todayKey]}';
+    }
+
+    return 'Check website for hours';
+  }
+
+  bool hasAmenity(String amenity) => amenities.contains(amenity.toLowerCase());
+  bool hasFacility(String facility) => facilities.contains(facility.toLowerCase());
+
+  // Calculate distance from user location (if available)
+  double? distanceFrom(double? userLat, double? userLng) {
+    if (userLat == null || userLng == null) return null;
+
+    const double earthRadius = 6371; // km
+    final dLat = _degreesToRadians(latitude - userLat);
+    final dLng = _degreesToRadians(longitude - userLng);
+
+    final a = (dLat / 2).sin() * (dLat / 2).sin() +
+        userLat.cos() * latitude.cos() * (dLng / 2).sin() * (dLng / 2).sin();
+    final c = 2 * a.atan2((1 - a).sqrt());
+
+    return earthRadius * c * 0.621371; // Convert to miles
+  }
+
+  double _degreesToRadians(double degrees) => degrees * (3.141592653589793 / 180);
 }
 
 // API Event Model (different from cached event)
@@ -164,6 +269,7 @@ class ApiService extends ChangeNotifier {
   bool _isOnline = true;
   DateTime? _lastNewsFetch;
   DateTime? _lastEventsFetch;
+  DateTime? _lastRecCentersFetch;
 
   static const Duration _cacheExpiry = Duration(hours: 6); // 6 hours for API data
 
@@ -402,6 +508,14 @@ class ApiService extends ChangeNotifier {
     await _storageService.saveAppState({'events_cache': cacheData});
   }
 
+  Future<void> _cacheRecreationCenters(List<RecreationCenter> centers) async {
+    final cacheData = {
+      'centers': centers.map((c) => c.toJson()).toList(),
+      'cachedAt': DateTime.now().toIso8601String(),
+    };
+    await _storageService.saveAppState({'rec_centers_cache': cacheData});
+  }
+
   Future<List<ApiEvent>> _getCachedEvents() async {
     try {
       final cache = await _storageService.getAppState();
@@ -424,6 +538,85 @@ class ApiService extends ChangeNotifier {
     }
   }
 
+  Future<List<RecreationCenter>> _getCachedRecreationCenters() async {
+    try {
+      final cache = await _storageService.getAppState();
+      final centersCache = cache['rec_centers_cache'];
+      if (centersCache == null) return [];
+
+      final cachedAt = DateTime.tryParse(centersCache['cachedAt'] ?? '');
+      if (cachedAt == null || DateTime.now().difference(cachedAt) > _cacheExpiry) {
+        return [];
+      }
+
+      final centers = (centersCache['centers'] as List<dynamic>?)
+          ?.map((json) => RecreationCenter.fromJson(json))
+          .toList() ?? [];
+
+      return centers;
+    } catch (e) {
+      debugPrint('Error getting cached recreation centers: $e');
+      return [];
+    }
+  }
+
+  // Recreation Centers API Methods
+  Future<ApiResponse<List<RecreationCenter>>> fetchRecreationCenters({
+    String district = 'all',
+    String amenity = 'all',
+    bool forceRefresh = false,
+  }) async {
+    try {
+      // Check cache first unless force refresh
+      if (!forceRefresh && _shouldUseCache(_lastRecCentersFetch)) {
+        final cachedCenters = await _getCachedRecreationCenters();
+        if (cachedCenters.isNotEmpty) {
+          return ApiResponse.success(cachedCenters);
+        }
+      }
+
+      if (!_isOnline) {
+        // Return cached data if offline
+        final cachedCenters = await _getCachedRecreationCenters();
+        return cachedCenters.isNotEmpty
+            ? ApiResponse.success(cachedCenters)
+            : ApiResponse.error('No internet connection and no cached data available');
+      }
+
+      // Make API call
+      final response = await _dio.get(
+        ApiConfig.recCentersEndpoint,
+        queryParameters: {
+          if (district != 'all') 'district': district,
+          if (amenity != 'all') 'amenity': amenity,
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final List<dynamic> data = response.data['centers'] ?? response.data ?? [];
+        final centers = data.map((json) => RecreationCenter.fromJson(json)).toList();
+
+        // Cache the results
+        await _cacheRecreationCenters(centers);
+        _lastRecCentersFetch = DateTime.now();
+
+        return ApiResponse.success(centers);
+      } else {
+        return ApiResponse.error('Failed to fetch recreation centers: ${response.statusCode}');
+      }
+    } catch (e) {
+      debugPrint('Error fetching recreation centers: $e');
+
+      // Try to return cached data on error
+      final cachedCenters = await _getCachedRecreationCenters();
+      if (cachedCenters.isNotEmpty) {
+        return ApiResponse.success(cachedCenters);
+      }
+
+      return ApiResponse.error('Failed to fetch recreation centers: ${e.toString()}');
+    }
+  }
+
   // Utility Methods
   Future<void> refreshAllData() async {
     if (!_isOnline) return;
@@ -431,6 +624,7 @@ class ApiService extends ChangeNotifier {
     await Future.wait([
       fetchNews(forceRefresh: true),
       fetchEvents(forceRefresh: true),
+      fetchRecreationCenters(forceRefresh: true),
     ]);
   }
 
@@ -438,22 +632,27 @@ class ApiService extends ChangeNotifier {
     await _storageService.saveAppState({
       'news_cache': null,
       'events_cache': null,
+      'rec_centers_cache': null,
     });
     _lastNewsFetch = null;
     _lastEventsFetch = null;
+    _lastRecCentersFetch = null;
   }
 
   // Get cache statistics
   Future<Map<String, dynamic>> getCacheStats() async {
     final newsCache = await _getCachedNews();
     final eventsCache = await _getCachedEvents();
+    final centersCache = await _getCachedRecreationCenters();
 
     return {
       'isOnline': _isOnline,
       'newsCacheCount': newsCache.length,
       'eventsCacheCount': eventsCache.length,
+      'recCentersCacheCount': centersCache.length,
       'lastNewsFetch': _lastNewsFetch?.toIso8601String(),
       'lastEventsFetch': _lastEventsFetch?.toIso8601String(),
+      'lastRecCentersFetch': _lastRecCentersFetch?.toIso8601String(),
     };
   }
 }
