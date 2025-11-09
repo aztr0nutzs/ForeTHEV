@@ -1,288 +1,473 @@
-import 'dart:convert';
+import 'dart:async';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'storage_service.dart';
 
-// User model
-class User {
+// Authentication States
+enum AuthState {
+  initial,
+  authenticated,
+  unauthenticated,
+  guest,
+  loading,
+  error,
+}
+
+// User Model
+class AppUser {
   final String id;
-  final String firstName;
-  final String lastName;
   final String email;
-  final String phone;
-  final String address;
-  final DateTime createdAt;
-  final bool isActive;
+  final String? displayName;
+  final String? photoUrl;
+  final DateTime? createdAt;
+  final DateTime? lastSignInAt;
+  final bool isEmailVerified;
+  final bool isGuest;
 
-  const User({
+  AppUser({
     required this.id,
-    required this.firstName,
-    required this.lastName,
     required this.email,
-    required this.phone,
-    required this.address,
-    required this.createdAt,
-    this.isActive = true,
+    this.displayName,
+    this.photoUrl,
+    this.createdAt,
+    this.lastSignInAt,
+    this.isEmailVerified = false,
+    this.isGuest = false,
   });
 
-  String get fullName => '$firstName $lastName';
+  factory AppUser.fromFirebaseUser(User user, {bool isGuest = false}) {
+    return AppUser(
+      id: user.uid,
+      email: user.email ?? '',
+      displayName: user.displayName,
+      photoUrl: user.photoURL,
+      createdAt: user.metadata.creationTime,
+      lastSignInAt: user.metadata.lastSignInTime,
+      isEmailVerified: user.emailVerified,
+      isGuest: isGuest,
+    );
+  }
 
-  Map<String, dynamic> toJson() => {
-        'id': id,
-        'firstName': firstName,
-        'lastName': lastName,
-        'email': email,
-        'phone': phone,
-        'address': address,
-        'createdAt': createdAt.toIso8601String(),
-        'isActive': isActive,
-      };
+  factory AppUser.guest() {
+    return AppUser(
+      id: 'guest_${DateTime.now().millisecondsSinceEpoch}',
+      email: 'guest@thevillages.com',
+      displayName: 'Guest User',
+      isGuest: true,
+      createdAt: DateTime.now(),
+    );
+  }
 
-  factory User.fromJson(Map<String, dynamic> json) => User(
-        id: json['id'],
-        firstName: json['firstName'],
-        lastName: json['lastName'],
-        email: json['email'],
-        phone: json['phone'],
-        address: json['address'],
-        createdAt: DateTime.parse(json['createdAt']),
-        isActive: json['isActive'] ?? true,
-      );
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'email': email,
+      'displayName': displayName,
+      'photoUrl': photoUrl,
+      'createdAt': createdAt?.toIso8601String(),
+      'lastSignInAt': lastSignInAt?.toIso8601String(),
+      'isEmailVerified': isEmailVerified,
+      'isGuest': isGuest,
+    };
+  }
+
+  factory AppUser.fromJson(Map<String, dynamic> json) {
+    return AppUser(
+      id: json['id'] ?? '',
+      email: json['email'] ?? '',
+      displayName: json['displayName'],
+      photoUrl: json['photoUrl'],
+      createdAt: json['createdAt'] != null ? DateTime.tryParse(json['createdAt']) : null,
+      lastSignInAt: json['lastSignInAt'] != null ? DateTime.tryParse(json['lastSignInAt']) : null,
+      isEmailVerified: json['isEmailVerified'] ?? false,
+      isGuest: json['isGuest'] ?? false,
+    );
+  }
 }
 
-// Authentication service
+// Authentication Service
 class AuthService extends ChangeNotifier {
+  final FirebaseAuth _firebaseAuth;
+  final FlutterSecureStorage _secureStorage;
+  final StorageService _storageService;
+
+  AuthState _authState = AuthState.initial;
+  AppUser? _currentUser;
+  String? _errorMessage;
+  StreamSubscription<User?>? _authStateSubscription;
+
   static const String _userKey = 'current_user';
-  static const String _tokenKey = 'auth_token';
+  static const String _guestModeKey = 'guest_mode_enabled';
 
-  User? _currentUser;
-  String? _token;
-  bool _isLoading = false;
+  AuthService(this._storageService)
+      : _firebaseAuth = FirebaseAuth.instance,
+        _secureStorage = const FlutterSecureStorage() {
+    _initializeAuth();
+  }
 
-  User? get currentUser => _currentUser;
-  String? get token => _token;
-  bool get isAuthenticated => _currentUser != null && _token != null;
-  bool get isLoading => _isLoading;
-
-  // Initialize service - load saved user data
-  Future<void> initialize() async {
-    _isLoading = true;
-    notifyListeners();
-
+  Future<void> _initializeAuth() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      _authState = AuthState.loading;
+      notifyListeners();
 
-      // Load saved user data
-      final userJson = prefs.getString(_userKey);
-      final savedToken = prefs.getString(_tokenKey);
+      // Initialize Firebase if not already done
+      await Firebase.initializeApp();
 
-      if (userJson != null && savedToken != null) {
-        _currentUser = User.fromJson(json.decode(userJson));
-        _token = savedToken;
+      // Listen to auth state changes
+      _authStateSubscription = _firebaseAuth.authStateChanges().listen(
+        _onAuthStateChanged,
+        onError: _onAuthError,
+      );
+
+      // Check for guest mode
+      final guestModeEnabled = await _secureStorage.read(key: _guestModeKey);
+      if (guestModeEnabled == 'true') {
+        await _enterGuestMode();
       }
+
+      debugPrint('AuthService initialized successfully');
     } catch (e) {
-      debugPrint('Error initializing auth service: $e');
-    } finally {
-      _isLoading = false;
+      debugPrint('Error initializing AuthService: $e');
+      _authState = AuthState.error;
+      _errorMessage = e.toString();
       notifyListeners();
     }
   }
 
-  // Sign in with email and password
-  Future<bool> signIn(String email, String password) async {
-    _isLoading = true;
-    notifyListeners();
-
-    try {
-      // Simulate API call delay
-      await Future.delayed(const Duration(seconds: 2));
-
-      // For demo purposes, accept demo credentials
-      if (email == 'demo@villagesconnect.com' && password == 'demo123') {
-        // Create demo user
-        _currentUser = const User(
-          id: 'demo_user_123',
-          firstName: 'John',
-          lastName: 'Doe',
-          email: 'demo@villagesconnect.com',
-          phone: '(352) 555-0123',
-          address: '123 Palm Drive, The Villages, FL 32162',
-          createdAt: null, // Will be set below
-        ).copyWith(createdAt: DateTime.now());
-
-        // Generate mock token
-        _token = 'demo_token_${DateTime.now().millisecondsSinceEpoch}';
-
-        // Save to persistent storage
-        await _saveUserData();
-
-        _isLoading = false;
+  void _onAuthStateChanged(User? firebaseUser) {
+    if (firebaseUser != null) {
+      _currentUser = AppUser.fromFirebaseUser(firebaseUser);
+      _authState = AuthState.authenticated;
+      _saveUserData();
+    } else {
+      // Check if we're in guest mode
+      final guestModeEnabled = _secureStorage.read(key: _guestModeKey);
+      guestModeEnabled.then((enabled) {
+        if (enabled == 'true' && _currentUser?.isGuest == true) {
+          _authState = AuthState.guest;
+        } else {
+          _authState = AuthState.unauthenticated;
+          _currentUser = null;
+        }
         notifyListeners();
-        return true;
-      }
-
-      // For other valid email formats, create a mock user
-      if (email.contains('@') && password.length >= 6) {
-        final nameParts = email.split('@')[0].split('.');
-        final firstName = nameParts.isNotEmpty ? nameParts[0] : 'User';
-        final lastName = nameParts.length > 1 ? nameParts[1] : 'Demo';
-
-        _currentUser = User(
-          id: 'user_${DateTime.now().millisecondsSinceEpoch}',
-          firstName: firstName,
-          lastName: lastName,
-          email: email,
-          phone: '(352) 555-0000',
-          address: 'The Villages, FL',
-          createdAt: DateTime.now(),
-        );
-
-        _token = 'token_${DateTime.now().millisecondsSinceEpoch}';
-        await _saveUserData();
-
-        _isLoading = false;
-        notifyListeners();
-        return true;
-      }
-
-      _isLoading = false;
-      notifyListeners();
-      return false;
-    } catch (e) {
-      debugPrint('Error signing in: $e');
-      _isLoading = false;
-      notifyListeners();
-      return false;
+      });
     }
+    notifyListeners();
   }
 
-  // Register new user
-  Future<bool> register({
-    required String firstName,
-    required String lastName,
-    required String email,
-    required String phone,
-    required String address,
-    required String password,
-  }) async {
-    _isLoading = true;
+  void _onAuthError(Object error) {
+    debugPrint('Auth state error: $error');
+    _authState = AuthState.error;
+    _errorMessage = error.toString();
     notifyListeners();
+  }
 
+  // Authentication Methods
+  Future<bool> signInWithEmailAndPassword(String email, String password) async {
     try {
-      // Simulate API call delay
-      await Future.delayed(const Duration(seconds: 2));
+      _authState = AuthState.loading;
+      _errorMessage = null;
+      notifyListeners();
 
-      // Create new user
-      _currentUser = User(
-        id: 'user_${DateTime.now().millisecondsSinceEpoch}',
-        firstName: firstName,
-        lastName: lastName,
+      final userCredential = await _firebaseAuth.signInWithEmailAndPassword(
         email: email,
-        phone: phone,
-        address: address,
-        createdAt: DateTime.now(),
+        password: password,
       );
 
-      // Generate token
-      _token = 'token_${DateTime.now().millisecondsSinceEpoch}';
+      if (userCredential.user != null) {
+        _currentUser = AppUser.fromFirebaseUser(userCredential.user!);
+        _authState = AuthState.authenticated;
+        await _saveUserData();
+        await _exitGuestMode(); // Exit guest mode if user signs in
+        notifyListeners();
+        return true;
+      }
 
-      // Save to persistent storage
-      await _saveUserData();
-
-      _isLoading = false;
+      return false;
+    } on FirebaseAuthException catch (e) {
+      _authState = AuthState.unauthenticated;
+      _errorMessage = _getFirebaseAuthErrorMessage(e);
       notifyListeners();
-      return true;
+      return false;
     } catch (e) {
-      debugPrint('Error registering user: $e');
-      _isLoading = false;
+      _authState = AuthState.error;
+      _errorMessage = 'An unexpected error occurred: ${e.toString()}';
       notifyListeners();
       return false;
     }
   }
 
-  // Update user profile
-  Future<bool> updateProfile({
-    String? firstName,
-    String? lastName,
-    String? phone,
-    String? address,
-  }) async {
-    if (_currentUser == null) return false;
-
+  Future<bool> createUserWithEmailAndPassword(String email, String password, {String? displayName}) async {
     try {
-      _currentUser = User(
-        id: _currentUser!.id,
-        firstName: firstName ?? _currentUser!.firstName,
-        lastName: lastName ?? _currentUser!.lastName,
-        email: _currentUser!.email,
-        phone: phone ?? _currentUser!.phone,
-        address: address ?? _currentUser!.address,
-        createdAt: _currentUser!.createdAt,
-        isActive: _currentUser!.isActive,
+      _authState = AuthState.loading;
+      _errorMessage = null;
+      notifyListeners();
+
+      final userCredential = await _firebaseAuth.createUserWithEmailAndPassword(
+        email: email,
+        password: password,
       );
 
-      await _saveUserData();
+      if (userCredential.user != null) {
+        // Update display name if provided
+        if (displayName != null && displayName.isNotEmpty) {
+          await userCredential.user!.updateDisplayName(displayName);
+          await userCredential.user!.reload();
+        }
+
+        // Send email verification
+        await userCredential.user!.sendEmailVerification();
+
+        _currentUser = AppUser.fromFirebaseUser(userCredential.user!);
+        _authState = AuthState.authenticated;
+        await _saveUserData();
+        await _exitGuestMode(); // Exit guest mode if user registers
+        notifyListeners();
+        return true;
+      }
+
+      return false;
+    } on FirebaseAuthException catch (e) {
+      _authState = AuthState.unauthenticated;
+      _errorMessage = _getFirebaseAuthErrorMessage(e);
       notifyListeners();
-      return true;
+      return false;
     } catch (e) {
-      debugPrint('Error updating profile: $e');
+      _authState = AuthState.error;
+      _errorMessage = 'An unexpected error occurred: ${e.toString()}';
+      notifyListeners();
       return false;
     }
   }
 
-  // Sign out
-  Future<void> signOut() async {
-    _currentUser = null;
-    _token = null;
-
+  Future<bool> signOut() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove(_userKey);
-      await prefs.remove(_tokenKey);
+      await _firebaseAuth.signOut();
+      await _exitGuestMode();
+      _currentUser = null;
+      _authState = AuthState.unauthenticated;
+      await _clearUserData();
+      notifyListeners();
+      return true;
     } catch (e) {
       debugPrint('Error signing out: $e');
+      _errorMessage = 'Error signing out: ${e.toString()}';
+      notifyListeners();
+      return false;
     }
+  }
 
+  // Guest Mode
+  Future<bool> enterGuestMode() async {
+    try {
+      await _enterGuestMode();
+      return true;
+    } catch (e) {
+      debugPrint('Error entering guest mode: $e');
+      _errorMessage = 'Error entering guest mode: ${e.toString()}';
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<void> _enterGuestMode() async {
+    _currentUser = AppUser.guest();
+    _authState = AuthState.guest;
+    await _secureStorage.write(key: _guestModeKey, value: 'true');
+    await _saveUserData();
     notifyListeners();
   }
 
-  // Save user data to persistent storage
-  Future<void> _saveUserData() async {
-    if (_currentUser == null || _token == null) return;
+  Future<void> _exitGuestMode() async {
+    await _secureStorage.delete(key: _guestModeKey);
+  }
 
+  // Password Reset
+  Future<bool> sendPasswordResetEmail(String email) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_userKey, json.encode(_currentUser!.toJson()));
-      await prefs.setString(_tokenKey, _token!);
+      await _firebaseAuth.sendPasswordResetEmail(email: email);
+      return true;
+    } on FirebaseAuthException catch (e) {
+      _errorMessage = _getFirebaseAuthErrorMessage(e);
+      notifyListeners();
+      return false;
     } catch (e) {
-      debugPrint('Error saving user data: $e');
+      _errorMessage = 'Error sending password reset: ${e.toString()}';
+      notifyListeners();
+      return false;
     }
   }
 
-  // Check if user is authenticated (for guards)
-  bool get isUserAuthenticated => isAuthenticated;
-}
+  // Email Verification
+  Future<bool> sendEmailVerification() async {
+    try {
+      final user = _firebaseAuth.currentUser;
+      if (user != null && !user.emailVerified) {
+        await user.sendEmailVerification();
+        return true;
+      }
+      return false;
+    } catch (e) {
+      _errorMessage = 'Error sending verification email: ${e.toString()}';
+      notifyListeners();
+      return false;
+    }
+  }
 
-// Extension to copy User with modified fields
-extension UserCopyWith on User {
-  User copyWith({
-    String? id,
-    String? firstName,
-    String? lastName,
-    String? email,
-    String? phone,
-    String? address,
-    DateTime? createdAt,
-    bool? isActive,
-  }) {
-    return User(
-      id: id ?? this.id,
-      firstName: firstName ?? this.firstName,
-      lastName: lastName ?? this.lastName,
-      email: email ?? this.email,
-      phone: phone ?? this.phone,
-      address: address ?? this.address,
-      createdAt: createdAt ?? this.createdAt,
-      isActive: isActive ?? this.isActive,
-    );
+  Future<bool> reloadUser() async {
+    try {
+      await _firebaseAuth.currentUser?.reload();
+      if (_firebaseAuth.currentUser != null) {
+        _currentUser = AppUser.fromFirebaseUser(_firebaseAuth.currentUser!);
+        await _saveUserData();
+        notifyListeners();
+        return true;
+      }
+      return false;
+    } catch (e) {
+      debugPrint('Error reloading user: $e');
+      return false;
+    }
+  }
+
+  // Data Persistence
+  Future<void> _saveUserData() async {
+    if (_currentUser != null) {
+      try {
+        await _storageService.saveAppState({_userKey: _currentUser!.toJson()});
+      } catch (e) {
+        debugPrint('Error saving user data: $e');
+      }
+    }
+  }
+
+  Future<void> _clearUserData() async {
+    try {
+      await _storageService.saveAppState({_userKey: null});
+    } catch (e) {
+      debugPrint('Error clearing user data: $e');
+    }
+  }
+
+  // Utility Methods
+  String _getFirebaseAuthErrorMessage(FirebaseAuthException e) {
+    switch (e.code) {
+      case 'user-not-found':
+        return 'No user found with this email address.';
+      case 'wrong-password':
+        return 'Incorrect password.';
+      case 'email-already-in-use':
+        return 'An account already exists with this email address.';
+      case 'weak-password':
+        return 'Password is too weak.';
+      case 'invalid-email':
+        return 'Invalid email address.';
+      case 'user-disabled':
+        return 'This account has been disabled.';
+      case 'too-many-requests':
+        return 'Too many failed attempts. Please try again later.';
+      case 'operation-not-allowed':
+        return 'Email/password authentication is not enabled.';
+      default:
+        return 'Authentication error: ${e.message}';
+    }
+  }
+
+  // Getters
+  AuthState get authState => _authState;
+  AppUser? get currentUser => _currentUser;
+  String? get errorMessage => _errorMessage;
+  bool get isAuthenticated => _authState == AuthState.authenticated;
+  bool get isGuest => _authState == AuthState.guest;
+  bool get isLoading => _authState == AuthState.loading;
+  bool get hasError => _authState == AuthState.error;
+
+  // User Profile Updates
+  Future<bool> updateDisplayName(String displayName) async {
+    try {
+      await _firebaseAuth.currentUser?.updateDisplayName(displayName);
+      await reloadUser();
+      return true;
+    } catch (e) {
+      _errorMessage = 'Error updating display name: ${e.toString()}';
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> updateEmail(String email) async {
+    try {
+      await _firebaseAuth.currentUser?.updateEmail(email);
+      await reloadUser();
+      return true;
+    } catch (e) {
+      _errorMessage = 'Error updating email: ${e.toString()}';
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> updatePassword(String password) async {
+    try {
+      await _firebaseAuth.currentUser?.updatePassword(password);
+      return true;
+    } catch (e) {
+      _errorMessage = 'Error updating password: ${e.toString()}';
+      notifyListeners();
+      return false;
+    }
+  }
+
+  // Account Deletion
+  Future<bool> deleteAccount() async {
+    try {
+      await _firebaseAuth.currentUser?.delete();
+      await _clearUserData();
+      _currentUser = null;
+      _authState = AuthState.unauthenticated;
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _errorMessage = 'Error deleting account: ${e.toString()}';
+      notifyListeners();
+      return false;
+    }
+  }
+
+  // Cleanup
+  Future<void> dispose() async {
+    await _authStateSubscription?.cancel();
+    super.dispose();
+  }
+
+  // Authentication Guards
+  bool canAccessPremiumFeatures() {
+    return isAuthenticated && !isGuest;
+  }
+
+  bool canAccessCommunityFeatures() {
+    return isAuthenticated || isGuest; // Allow guest access to basic features
+  }
+
+  // Token Management (for API calls)
+  Future<String?> getIdToken() async {
+    try {
+      return await _firebaseAuth.currentUser?.getIdToken();
+    } catch (e) {
+      debugPrint('Error getting ID token: $e');
+      return null;
+    }
+  }
+
+  Future<bool> refreshToken() async {
+    try {
+      await _firebaseAuth.currentUser?.getIdToken(true);
+      return true;
+    } catch (e) {
+      debugPrint('Error refreshing token: $e');
+      return false;
+    }
   }
 }
