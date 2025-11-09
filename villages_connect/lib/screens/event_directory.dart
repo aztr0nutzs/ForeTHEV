@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../services/api_service.dart';
 
 // Event model
 class Event {
@@ -38,8 +40,66 @@ class EventDirectory extends StatefulWidget {
 class _EventDirectoryState extends State<EventDirectory> {
   String selectedCategory = 'all';
   String searchQuery = '';
+  List<Event> events = [];
+  bool isLoading = true;
+  String? errorMessage;
 
-  // Sample events data
+  @override
+  void initState() {
+    super.initState();
+    _loadEvents();
+  }
+
+  Future<void> _loadEvents() async {
+    setState(() {
+      isLoading = true;
+      errorMessage = null;
+    });
+
+    try {
+      final apiService = context.read<ApiService>();
+      final response = await apiService.fetchEvents(
+        limit: 20,
+        category: selectedCategory == 'all' ? 'all' : selectedCategory,
+      );
+
+      if (response.success && response.data != null) {
+        // Convert API events to local format for compatibility
+        setState(() {
+          events = response.data!.map((apiEvent) => Event(
+            id: apiEvent.id,
+            title: apiEvent.title,
+            description: apiEvent.description,
+            date: apiEvent.startDate.toIso8601String().split('T')[0],
+            time: '${apiEvent.startDate.hour}:${apiEvent.startDate.minute.toString().padLeft(2, '0')} - ${apiEvent.endDate.hour}:${apiEvent.endDate.minute.toString().padLeft(2, '0')}',
+            location: apiEvent.location,
+            category: apiEvent.category,
+            capacity: apiEvent.maxAttendees,
+            registered: apiEvent.currentAttendees,
+            isRegistered: false, // This would come from user preferences
+          )).toList();
+        });
+      } else {
+        setState(() {
+          errorMessage = response.error ?? 'Failed to load events';
+        });
+      }
+    } catch (e) {
+      setState(() {
+        errorMessage = 'Failed to load events: ${e.toString()}';
+      });
+    } finally {
+      setState(() {
+        isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _refreshEvents() async {
+    await _loadEvents();
+  }
+
+  // Sample events data (fallback)
   final List<Event> allEvents = [
     Event(
       id: '1',
@@ -100,7 +160,8 @@ class _EventDirectoryState extends State<EventDirectory> {
   ];
 
   List<Event> get filteredEvents {
-    return allEvents.where((event) {
+    final sourceEvents = events.isNotEmpty ? events : allEvents;
+    return sourceEvents.where((event) {
       final matchesCategory = selectedCategory == 'all' || event.category == selectedCategory;
       final matchesSearch = searchQuery.isEmpty ||
           event.title.toLowerCase().contains(searchQuery.toLowerCase()) ||
@@ -141,6 +202,13 @@ class _EventDirectoryState extends State<EventDirectory> {
       appBar: AppBar(
         title: const Text('Event Directory'),
         backgroundColor: Theme.of(context).primaryColor,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _refreshEvents,
+            tooltip: 'Refresh Events',
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -197,15 +265,43 @@ class _EventDirectoryState extends State<EventDirectory> {
             ),
           ),
 
-          // Results Count
+          // Results Count and Status
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Text(
-              'Showing ${filteredEvents.length} of ${allEvents.length} events',
-              style: TextStyle(
-                color: Colors.grey[600],
-                fontSize: 14,
-              ),
+            child: Column(
+              children: [
+                if (isLoading)
+                  const CircularProgressIndicator()
+                else if (errorMessage != null)
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    color: Colors.red[50],
+                    child: Row(
+                      children: [
+                        const Icon(Icons.error, color: Colors.red),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            errorMessage!,
+                            style: const TextStyle(color: Colors.red),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: _refreshEvents,
+                          child: const Text('Retry'),
+                        ),
+                      ],
+                    ),
+                  )
+                else
+                  Text(
+                    'Showing ${filteredEvents.length} of ${events.isNotEmpty ? events.length : allEvents.length} events',
+                    style: TextStyle(
+                      color: Colors.grey[600],
+                      fontSize: 14,
+                    ),
+                  ),
+              ],
             ),
           ),
 

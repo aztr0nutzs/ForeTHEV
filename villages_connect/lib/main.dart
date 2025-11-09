@@ -12,6 +12,7 @@ import 'screens/profile_screen.dart';
 import 'services/auth_service.dart';
 import 'services/notification_service.dart';
 import 'services/storage_service.dart';
+import 'services/api_service.dart';
 import 'widgets/navigation_guard.dart';
 import 'widgets/notification_scheduler.dart';
 
@@ -30,6 +31,7 @@ class _VillagesConnectAppState extends State<VillagesConnectApp> {
   final AuthService _authService = AuthService();
   final NotificationService _notificationService = NotificationService();
   final StorageService _storageService = StorageService();
+  late ApiService _apiService;
 
   @override
   void initState() {
@@ -47,6 +49,9 @@ class _VillagesConnectAppState extends State<VillagesConnectApp> {
       // Initialize storage service first
       await _storageService.initialize();
 
+      // Initialize API service with storage dependency
+      _apiService = ApiService(_storageService);
+
       // Initialize auth service
       await _authService.initialize();
 
@@ -55,6 +60,9 @@ class _VillagesConnectAppState extends State<VillagesConnectApp> {
 
       // Request notification permissions
       await _notificationService.requestPermissions();
+
+      // Refresh API data on app start
+      await _apiService.refreshAllData();
 
     } catch (e) {
       debugPrint('Error initializing services: $e');
@@ -68,6 +76,7 @@ class _VillagesConnectAppState extends State<VillagesConnectApp> {
         ChangeNotifierProvider.value(value: _authService),
         ChangeNotifierProvider.value(value: _notificationService),
         ChangeNotifierProvider.value(value: _storageService),
+        ChangeNotifierProvider.value(value: _apiService),
       ],
       child: Consumer<AuthService>(
         builder: (context, authService, _) {

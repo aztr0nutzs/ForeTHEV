@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../services/api_service.dart';
 
-// News Article model
+// News Article model (keeping for compatibility but will be replaced by API model)
 class NewsArticle {
   final String id;
   final String title;
@@ -42,8 +44,68 @@ class NewsFeed extends StatefulWidget {
 class _NewsFeedState extends State<NewsFeed> {
   String selectedCategory = 'all';
   String searchQuery = '';
+  List<NewsArticle> articles = [];
+  bool isLoading = true;
+  String? errorMessage;
 
-  // Sample news articles
+  @override
+  void initState() {
+    super.initState();
+    _loadNews();
+  }
+
+  Future<void> _loadNews() async {
+    setState(() {
+      isLoading = true;
+      errorMessage = null;
+    });
+
+    try {
+      final apiService = context.read<ApiService>();
+      final response = await apiService.fetchNews(
+        limit: 20,
+        category: selectedCategory == 'all' ? 'all' : selectedCategory,
+      );
+
+      if (response.success && response.data != null) {
+        // Convert API articles to local format for compatibility
+        setState(() {
+          articles = response.data!.map((apiArticle) => NewsArticle(
+            id: apiArticle.id,
+            title: apiArticle.title,
+            summary: apiArticle.summary,
+            content: apiArticle.content,
+            author: apiArticle.author,
+            publishedDate: apiArticle.publishedAt.toIso8601String().split('T')[0],
+            category: apiArticle.category,
+            imageUrl: apiArticle.imageUrl,
+            readTime: (apiArticle.content.length / 200).round(), // Estimate read time
+            isRead: false,
+            likes: 0,
+            comments: 0,
+          )).toList();
+        });
+      } else {
+        setState(() {
+          errorMessage = response.error ?? 'Failed to load news';
+        });
+      }
+    } catch (e) {
+      setState(() {
+        errorMessage = 'Failed to load news: ${e.toString()}';
+      });
+    } finally {
+      setState(() {
+        isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _refreshNews() async {
+    await _loadNews();
+  }
+
+  // Sample news articles (fallback)
   final List<NewsArticle> allArticles = [
     NewsArticle(
       id: '1',
@@ -120,7 +182,8 @@ class _NewsFeedState extends State<NewsFeed> {
   ];
 
   List<NewsArticle> get filteredArticles {
-    return allArticles.where((article) {
+    final sourceArticles = articles.isNotEmpty ? articles : allArticles;
+    return sourceArticles.where((article) {
       final matchesCategory = selectedCategory == 'all' || article.category == selectedCategory;
       final matchesSearch = searchQuery.isEmpty ||
           article.title.toLowerCase().contains(searchQuery.toLowerCase()) ||
@@ -166,6 +229,11 @@ class _NewsFeedState extends State<NewsFeed> {
         title: const Text('Community News'),
         backgroundColor: Theme.of(context).primaryColor,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _refreshNews,
+            tooltip: 'Refresh News',
+          ),
           IconButton(
             icon: const Icon(Icons.bookmark_border),
             onPressed: () {
@@ -232,15 +300,43 @@ class _NewsFeedState extends State<NewsFeed> {
             ),
           ),
 
-          // Results Count
+          // Results Count and Status
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Text(
-              'Showing ${filteredArticles.length} of ${allArticles.length} articles',
-              style: TextStyle(
-                color: Colors.grey[600],
-                fontSize: 14,
-              ),
+            child: Column(
+              children: [
+                if (isLoading)
+                  const CircularProgressIndicator()
+                else if (errorMessage != null)
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    color: Colors.red[50],
+                    child: Row(
+                      children: [
+                        const Icon(Icons.error, color: Colors.red),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            errorMessage!,
+                            style: const TextStyle(color: Colors.red),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: _refreshNews,
+                          child: const Text('Retry'),
+                        ),
+                      ],
+                    ),
+                  )
+                else
+                  Text(
+                    'Showing ${filteredArticles.length} of ${articles.isNotEmpty ? articles.length : allArticles.length} articles',
+                    style: TextStyle(
+                      color: Colors.grey[600],
+                      fontSize: 14,
+                    ),
+                  ),
+              ],
             ),
           ),
 
