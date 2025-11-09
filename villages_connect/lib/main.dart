@@ -1,76 +1,113 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'screens/home_dashboard.dart';
 import 'screens/event_directory.dart';
 import 'screens/rec_center_directory.dart';
 import 'screens/news_feed.dart';
+import 'screens/login_screen.dart';
+import 'screens/registration_screen.dart';
+import 'screens/profile_screen.dart';
+import 'services/auth_service.dart';
 import 'widgets/navigation_guard.dart';
 
 void main() {
   runApp(const VillagesConnectApp());
 }
 
-class VillagesConnectApp extends StatelessWidget {
+class VillagesConnectApp extends StatefulWidget {
   const VillagesConnectApp({Key? key}) : super(key: key);
 
   @override
+  State<VillagesConnectApp> createState() => _VillagesConnectAppState();
+}
+
+class _VillagesConnectAppState extends State<VillagesConnectApp> {
+  final AuthService _authService = AuthService();
+
+  @override
+  void initState() {
+    super.initState();
+    _authService.initialize();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Villages Connect',
-      theme: ThemeData(
-        primarySwatch: Colors.blue,
-        fontFamily: 'Roboto',
-        textTheme: const TextTheme(
-          headlineLarge: TextStyle(fontSize: 32, fontWeight: FontWeight.bold),
-          headlineMedium: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
-          headlineSmall: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-          titleLarge: TextStyle(fontSize: 22, fontWeight: FontWeight.w500),
-          titleMedium: TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
-          titleSmall: TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
-          bodyLarge: TextStyle(fontSize: 18),
-          bodyMedium: TextStyle(fontSize: 16),
-          bodySmall: TextStyle(fontSize: 14),
-        ),
-        elevatedButtonTheme: ElevatedButtonThemeData(
-          style: ElevatedButton.styleFrom(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-            minimumSize: const Size(88, 48),
-            textStyle: const TextStyle(fontSize: 18),
-          ),
-        ),
-        inputDecorationTheme: const InputDecorationTheme(
-          contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          border: OutlineInputBorder(),
-        ),
-        pageTransitionsTheme: const PageTransitionsTheme(
-          builders: {
-            TargetPlatform.android: CupertinoPageTransitionsBuilder(),
-            TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
-          },
-        ),
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider.value(value: _authService),
+      ],
+      child: Consumer<AuthService>(
+        builder: (context, authService, _) {
+          return MaterialApp(
+            title: 'Villages Connect',
+            theme: ThemeData(
+              primarySwatch: Colors.blue,
+              fontFamily: 'Roboto',
+              textTheme: const TextTheme(
+                headlineLarge: TextStyle(fontSize: 32, fontWeight: FontWeight.bold),
+                headlineMedium: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+                headlineSmall: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                titleLarge: TextStyle(fontSize: 22, fontWeight: FontWeight.w500),
+                titleMedium: TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
+                titleSmall: TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+                bodyLarge: TextStyle(fontSize: 18),
+                bodyMedium: TextStyle(fontSize: 16),
+                bodySmall: TextStyle(fontSize: 14),
+              ),
+              elevatedButtonTheme: ElevatedButtonThemeData(
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  minimumSize: const Size(88, 48),
+                  textStyle: const TextStyle(fontSize: 18),
+                ),
+              ),
+              inputDecorationTheme: const InputDecorationTheme(
+                contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                border: OutlineInputBorder(),
+              ),
+              pageTransitionsTheme: const PageTransitionsTheme(
+                builders: {
+                  TargetPlatform.android: CupertinoPageTransitionsBuilder(),
+                  TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+                },
+              ),
+            ),
+            navigatorObservers: [appRouteObserver],
+            home: authService.isAuthenticated
+                ? const MainNavigation()
+                : const LoginScreen(),
+            routes: {
+              '/login': (context) => const LoginScreen(),
+              '/register': (context) => const RegistrationScreen(),
+              '/dashboard': (context) => NavigationGuard(
+                    child: const HomeDashboard(),
+                    isAuthenticated: authService.isAuthenticated,
+                    fallbackScreen: const LoginScreen(),
+                  ),
+              '/events': (context) => NavigationGuard(
+                    child: const EventDirectory(),
+                    isAuthenticated: authService.isAuthenticated,
+                    fallbackScreen: const LoginScreen(),
+                  ),
+              '/rec-centers': (context) => NavigationGuard(
+                    child: const RecCenterDirectory(),
+                    isAuthenticated: authService.isAuthenticated,
+                    fallbackScreen: const LoginScreen(),
+                  ),
+              '/news': (context) => NavigationGuard(
+                    child: const NewsFeed(),
+                    isAuthenticated: authService.isAuthenticated,
+                    fallbackScreen: const LoginScreen(),
+                  ),
+              '/profile': (context) => NavigationGuard(
+                    child: const ProfileScreen(),
+                    isAuthenticated: authService.isAuthenticated,
+                    fallbackScreen: const LoginScreen(),
+                  ),
+            },
+          );
+        },
       ),
-      navigatorObservers: [appRouteObserver],
-      home: const NavigationGuard(
-        child: MainNavigation(),
-        isAuthenticated: true, // For now, allow access
-      ),
-      routes: {
-        '/dashboard': (context) => const NavigationGuard(
-          child: HomeDashboard(),
-          isAuthenticated: true,
-        ),
-        '/events': (context) => const NavigationGuard(
-          child: EventDirectory(),
-          isAuthenticated: true,
-        ),
-        '/rec-centers': (context) => const NavigationGuard(
-          child: RecCenterDirectory(),
-          isAuthenticated: true,
-        ),
-        '/news': (context) => const NavigationGuard(
-          child: NewsFeed(),
-          isAuthenticated: true,
-        ),
-      },
     );
   }
 }
@@ -90,6 +127,7 @@ class _MainNavigationState extends State<MainNavigation> {
     EventDirectory(),
     RecCenterDirectory(),
     NewsFeed(),
+    ProfileScreen(),
   ];
 
   static const List<String> _titles = [
@@ -97,6 +135,7 @@ class _MainNavigationState extends State<MainNavigation> {
     'Events',
     'Rec Centers',
     'News',
+    'Profile',
   ];
 
   void _onItemTapped(int index) {
@@ -131,26 +170,31 @@ class _MainNavigationState extends State<MainNavigation> {
       bottomNavigationBar: AccessibleBottomNavigationBar(
         currentIndex: _selectedIndex,
         onTap: _onItemTapped,
-        items: const [
-          BottomNavigationBarItem(
+        items: [
+          const BottomNavigationBarItem(
             icon: Icon(Icons.home, size: 28),
             label: 'Home',
             tooltip: 'Dashboard',
           ),
-          BottomNavigationBarItem(
+          const BottomNavigationBarItem(
             icon: Icon(Icons.event, size: 28),
             label: 'Events',
             tooltip: 'Community Events',
           ),
-          BottomNavigationBarItem(
+          const BottomNavigationBarItem(
             icon: Icon(Icons.fitness_center, size: 28),
             label: 'Rec Centers',
             tooltip: 'Recreation Centers',
           ),
-          BottomNavigationBarItem(
+          const BottomNavigationBarItem(
             icon: Icon(Icons.article, size: 28),
             label: 'News',
             tooltip: 'Community News',
+          ),
+          BottomNavigationBarItem(
+            icon: const Icon(Icons.person, size: 28),
+            label: 'Profile',
+            tooltip: 'My Profile',
           ),
         ],
       ),
