@@ -33,6 +33,10 @@ migrate_working_dir/
 /build/
 /coverage/
 .flutter/
+.gradle-home/
+android/.gradle-home/
+android/gradle/wrapper/gradle-*/
+android/gradle/wrapper/gradle-*.zip
 .gradle-user-home/
 
 # Symbolication related
