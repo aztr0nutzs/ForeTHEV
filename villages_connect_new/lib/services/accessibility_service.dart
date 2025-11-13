@@ -118,8 +118,9 @@ class AccessibilityPreferences {
 
 // Accessibility Service
 class AccessibilityService extends ChangeNotifier {
-  final FlutterTts _flutterTts;
+  final FlutterTts? _flutterTts;
   final StorageService _storageService;
+  final bool _ttsAvailable;
 
   AccessibilityPreferences _preferences = AccessibilityPreferences();
   bool _isInitialized = false;
@@ -127,7 +128,11 @@ class AccessibilityService extends ChangeNotifier {
 
   static const String _preferencesKey = 'accessibility_preferences';
 
-  AccessibilityService(this._storageService) : _flutterTts = FlutterTts() {
+  AccessibilityService(
+    this._storageService, {
+    bool textToSpeechAvailable = true,
+  })  : _ttsAvailable = textToSpeechAvailable,
+        _flutterTts = textToSpeechAvailable ? FlutterTts() : null {
     _initialization = _initializeService();
   }
 
@@ -138,8 +143,15 @@ class AccessibilityService extends ChangeNotifier {
       // Load preferences
       await _loadPreferences();
 
-      // Initialize TTS
-      await _initializeTTS();
+      if (_ttsAvailable && _flutterTts != null) {
+        await _initializeTTS();
+      } else if (_preferences.textToSpeechEnabled || _preferences.voiceFeedbackEnabled) {
+        _preferences = _preferences.copyWith(
+          textToSpeechEnabled: false,
+          voiceFeedbackEnabled: false,
+        );
+        await _savePreferences();
+      }
 
       _isInitialized = true;
       notifyListeners();
@@ -151,19 +163,21 @@ class AccessibilityService extends ChangeNotifier {
   }
 
   Future<void> _initializeTTS() async {
+    final tts = _flutterTts;
+    if (tts == null) return;
     try {
-      await _flutterTts.setLanguage(_preferences.speechLanguage);
-      await _flutterTts.setSpeechRate(_preferences.speechRate);
-      await _flutterTts.setPitch(_preferences.speechPitch);
-      await _flutterTts.setVolume(1.0);
+      await tts.setLanguage(_preferences.speechLanguage);
+      await tts.setSpeechRate(_preferences.speechRate);
+      await tts.setPitch(_preferences.speechPitch);
+      await tts.setVolume(1.0);
 
       // Set completion handler
-      _flutterTts.setCompletionHandler(() {
+      tts.setCompletionHandler(() {
         debugPrint('TTS completed');
       });
 
       // Set error handler
-      _flutterTts.setErrorHandler((error) {
+      tts.setErrorHandler((error) {
         debugPrint('TTS error: $error');
       });
     } catch (e) {
@@ -197,7 +211,7 @@ class AccessibilityService extends ChangeNotifier {
     await _savePreferences();
 
     // Update TTS settings if they changed
-    if (_preferences.textToSpeechEnabled) {
+    if (_preferences.textToSpeechEnabled && _ttsAvailable) {
       await _updateTTSSettings();
     }
 
@@ -205,10 +219,12 @@ class AccessibilityService extends ChangeNotifier {
   }
 
   Future<void> _updateTTSSettings() async {
+    final tts = _flutterTts;
+    if (tts == null) return;
     try {
-      await _flutterTts.setLanguage(_preferences.speechLanguage);
-      await _flutterTts.setSpeechRate(_preferences.speechRate);
-      await _flutterTts.setPitch(_preferences.speechPitch);
+      await tts.setLanguage(_preferences.speechLanguage);
+      await tts.setSpeechRate(_preferences.speechRate);
+      await tts.setPitch(_preferences.speechPitch);
     } catch (e) {
       debugPrint('Error updating TTS settings: $e');
     }
@@ -218,10 +234,13 @@ class AccessibilityService extends ChangeNotifier {
 
   // Text-to-Speech Methods
   Future<void> speak(String text) async {
-    if (!_preferences.textToSpeechEnabled && !_preferences.voiceFeedbackEnabled) return;
+    if (!_ttsAvailable ||
+        (!_preferences.textToSpeechEnabled && !_preferences.voiceFeedbackEnabled)) {
+      return;
+    }
 
     try {
-      await _flutterTts.speak(text);
+      await _flutterTts?.speak(text);
     } catch (e) {
       debugPrint('Error speaking text: $e');
     }
@@ -235,16 +254,20 @@ class AccessibilityService extends ChangeNotifier {
   }
 
   Future<void> stopSpeaking() async {
+    final tts = _flutterTts;
+    if (tts == null) return;
     try {
-      await _flutterTts.stop();
+      await tts.stop();
     } catch (e) {
       debugPrint('Error stopping TTS: $e');
     }
   }
 
   Future<void> pauseSpeaking() async {
+    final tts = _flutterTts;
+    if (tts == null) return;
     try {
-      await _flutterTts.pause();
+      await tts.pause();
     } catch (e) {
       debugPrint('Error pausing TTS: $e');
     }
@@ -252,21 +275,31 @@ class AccessibilityService extends ChangeNotifier {
 
   // Get available TTS languages
   Future<List<String>> getAvailableLanguages() async {
+    final tts = _flutterTts;
+    if (tts == null) {
+      return const ['en-US'];
+    }
+
     try {
-      return await _flutterTts.getLanguages;
+      return await tts.getLanguages;
     } catch (e) {
       debugPrint('Error getting TTS languages: $e');
-      return ['en-US'];
+      return const ['en-US'];
     }
   }
 
   // Get available TTS voices
   Future<List<dynamic>> getAvailableVoices() async {
+    final tts = _flutterTts;
+    if (tts == null) {
+      return const [];
+    }
+
     try {
-      return await _flutterTts.getVoices;
+      return await tts.getVoices;
     } catch (e) {
       debugPrint('Error getting TTS voices: $e');
-      return [];
+      return const [];
     }
   }
 
@@ -303,6 +336,7 @@ class AccessibilityService extends ChangeNotifier {
   bool get isVoiceFeedbackEnabled => _preferences.voiceFeedbackEnabled;
 
   Future<void> toggleVoiceFeedback() async {
+    if (!_ttsAvailable) return;
     await updatePreferences(_preferences.copyWith(
       voiceFeedbackEnabled: !_preferences.voiceFeedbackEnabled,
     ));
@@ -312,6 +346,7 @@ class AccessibilityService extends ChangeNotifier {
   bool get isTextToSpeechEnabled => _preferences.textToSpeechEnabled;
 
   Future<void> toggleTextToSpeech() async {
+    if (!_ttsAvailable) return;
     await updatePreferences(_preferences.copyWith(
       textToSpeechEnabled: !_preferences.textToSpeechEnabled,
     ));
@@ -426,7 +461,7 @@ class AccessibilityService extends ChangeNotifier {
   // Cleanup
   @override
   void dispose() {
-    unawaited(_flutterTts.stop());
+    unawaited(_flutterTts?.stop());
     super.dispose();
   }
 }

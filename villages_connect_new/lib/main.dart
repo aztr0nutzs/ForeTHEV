@@ -20,23 +20,37 @@ import 'screens/event_directory.dart';
 import 'screens/settings_screen.dart';
 import 'screens/rec_center_directory.dart';
 import 'screens/emergency_contact_hub.dart';
+import 'utils/platform_capabilities.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  final firebaseSupported = PlatformCapabilities.supportsFirebase;
+  final ttsSupported = PlatformCapabilities.supportsTextToSpeech;
+
   try {
-    // Initialize Firebase
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
+    // Initialize Firebase only on platforms where FlutterFire is supported.
+    if (firebaseSupported) {
+      await Firebase.initializeApp(
+        options: DefaultFirebaseOptions.currentPlatform,
+      );
+    } else {
+      debugPrint('Firebase not supported on this platform; continuing in guest mode.');
+    }
 
     // Initialize services
     final storageService = StorageService();
     await storageService.initialize();
 
-    final authService = AuthService(storageService);
+    final authService = AuthService(
+      storageService,
+      firebaseEnabled: firebaseSupported,
+    );
     final notificationService = NotificationService(storageService);
-    final accessibilityService = AccessibilityService(storageService);
+    final accessibilityService = AccessibilityService(
+      storageService,
+      textToSpeechAvailable: ttsSupported,
+    );
     final cacheService = CacheService(storageService);
     final apiService = ApiService(storageService);
 

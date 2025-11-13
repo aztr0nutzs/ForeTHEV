@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'storage_service.dart';
@@ -89,9 +88,10 @@ class AppUser {
 
 // Authentication Service
 class AuthService extends ChangeNotifier {
-  final FirebaseAuth _firebaseAuth;
   final FlutterSecureStorage _secureStorage;
   final StorageService _storageService;
+  final bool _firebaseEnabled;
+  FirebaseAuth? _firebaseAuth;
 
   AuthState _authState = AuthState.initial;
   AppUser? _currentUser;
@@ -102,9 +102,14 @@ class AuthService extends ChangeNotifier {
   static const String _userKey = 'current_user';
   static const String _guestModeKey = 'guest_mode_enabled';
 
-  AuthService(this._storageService)
-      : _firebaseAuth = FirebaseAuth.instance,
+  AuthService(
+    this._storageService, {
+    bool firebaseEnabled = true,
+  })  : _firebaseEnabled = firebaseEnabled,
         _secureStorage = const FlutterSecureStorage() {
+    if (_firebaseEnabled) {
+      _firebaseAuth = FirebaseAuth.instance;
+    }
     _initialization = _initializeAuth();
   }
 
@@ -115,11 +120,14 @@ class AuthService extends ChangeNotifier {
       _authState = AuthState.loading;
       notifyListeners();
 
-      // Initialize Firebase if not already done
-      await Firebase.initializeApp();
+      if (!_canUseFirebaseAuth) {
+        await _enterGuestMode();
+        debugPrint('AuthService initialized in guest-only mode (Firebase unavailable).');
+        return;
+      }
 
       // Listen to auth state changes
-      _authStateSubscription = _firebaseAuth.authStateChanges().listen(
+      _authStateSubscription = _firebaseAuth!.authStateChanges().listen(
         _onAuthStateChanged,
         onError: _onAuthError,
       );
@@ -137,6 +145,19 @@ class AuthService extends ChangeNotifier {
       _errorMessage = e.toString();
       notifyListeners();
     }
+  }
+
+  bool get _canUseFirebaseAuth => _firebaseEnabled && _firebaseAuth != null;
+
+  bool _ensureFirebaseAvailable(String action) {
+    if (_canUseFirebaseAuth) {
+      return true;
+    }
+
+    _errorMessage = '$action is unavailable in guest mode on this platform.';
+    _authState = AuthState.guest;
+    notifyListeners();
+    return false;
   }
 
   void _onAuthStateChanged(User? firebaseUser) {
@@ -169,12 +190,16 @@ class AuthService extends ChangeNotifier {
 
   // Authentication Methods
   Future<bool> signInWithEmailAndPassword(String email, String password) async {
+    if (!_ensureFirebaseAvailable('Email sign-in')) {
+      return false;
+    }
+
     try {
       _authState = AuthState.loading;
       _errorMessage = null;
       notifyListeners();
 
-      final userCredential = await _firebaseAuth.signInWithEmailAndPassword(
+      final userCredential = await _firebaseAuth!.signInWithEmailAndPassword(
         email: email,
         password: password,
       );
@@ -203,12 +228,16 @@ class AuthService extends ChangeNotifier {
   }
 
   Future<bool> createUserWithEmailAndPassword(String email, String password, {String? displayName}) async {
+    if (!_ensureFirebaseAvailable('Account creation')) {
+      return false;
+    }
+
     try {
       _authState = AuthState.loading;
       _errorMessage = null;
       notifyListeners();
 
-      final userCredential = await _firebaseAuth.createUserWithEmailAndPassword(
+      final userCredential = await _firebaseAuth!.createUserWithEmailAndPassword(
         email: email,
         password: password,
       );
@@ -246,8 +275,17 @@ class AuthService extends ChangeNotifier {
   }
 
   Future<bool> signOut() async {
+    if (!_canUseFirebaseAuth) {
+      await _exitGuestMode();
+      _currentUser = null;
+      _authState = AuthState.unauthenticated;
+      await _clearUserData();
+      notifyListeners();
+      return true;
+    }
+
     try {
-      await _firebaseAuth.signOut();
+      await _firebaseAuth!.signOut();
       await _exitGuestMode();
       _currentUser = null;
       _authState = AuthState.unauthenticated;
@@ -289,8 +327,12 @@ class AuthService extends ChangeNotifier {
 
   // Password Reset
   Future<bool> sendPasswordResetEmail(String email) async {
+    if (!_ensureFirebaseAvailable('Password reset')) {
+      return false;
+    }
+
     try {
-      await _firebaseAuth.sendPasswordResetEmail(email: email);
+      await _firebaseAuth!.sendPasswordResetEmail(email: email);
       return true;
     } on FirebaseAuthException catch (e) {
       _errorMessage = _getFirebaseAuthErrorMessage(e);
@@ -305,8 +347,12 @@ class AuthService extends ChangeNotifier {
 
   // Email Verification
   Future<bool> sendEmailVerification() async {
+    if (!_ensureFirebaseAvailable('Email verification')) {
+      return false;
+    }
+
     try {
-      final user = _firebaseAuth.currentUser;
+      final user = _firebaseAuth!.currentUser;
       if (user != null && !user.emailVerified) {
         await user.sendEmailVerification();
         return true;
@@ -320,10 +366,14 @@ class AuthService extends ChangeNotifier {
   }
 
   Future<bool> reloadUser() async {
+    if (!_ensureFirebaseAvailable('Reload user')) {
+      return false;
+    }
+
     try {
-      await _firebaseAuth.currentUser?.reload();
-      if (_firebaseAuth.currentUser != null) {
-        _currentUser = AppUser.fromFirebaseUser(_firebaseAuth.currentUser!);
+      await _firebaseAuth!.currentUser?.reload();
+      if (_firebaseAuth!.currentUser != null) {
+        _currentUser = AppUser.fromFirebaseUser(_firebaseAuth!.currentUser!);
         await _saveUserData();
         notifyListeners();
         return true;
@@ -389,8 +439,12 @@ class AuthService extends ChangeNotifier {
 
   // User Profile Updates
   Future<bool> updateDisplayName(String displayName) async {
+    if (!_ensureFirebaseAvailable('Profile updates')) {
+      return false;
+    }
+
     try {
-      await _firebaseAuth.currentUser?.updateDisplayName(displayName);
+      await _firebaseAuth!.currentUser?.updateDisplayName(displayName);
       await reloadUser();
       return true;
     } catch (e) {
@@ -401,8 +455,12 @@ class AuthService extends ChangeNotifier {
   }
 
   Future<bool> updateEmail(String email) async {
+    if (!_ensureFirebaseAvailable('Email updates')) {
+      return false;
+    }
+
     try {
-      final user = _firebaseAuth.currentUser;
+      final user = _firebaseAuth!.currentUser;
       if (user == null) {
         _errorMessage = 'No authenticated user.';
         notifyListeners();
@@ -420,8 +478,12 @@ class AuthService extends ChangeNotifier {
   }
 
   Future<bool> updatePassword(String password) async {
+    if (!_ensureFirebaseAvailable('Password updates')) {
+      return false;
+    }
+
     try {
-      await _firebaseAuth.currentUser?.updatePassword(password);
+      await _firebaseAuth!.currentUser?.updatePassword(password);
       return true;
     } catch (e) {
       _errorMessage = 'Error updating password: ${e.toString()}';
@@ -432,8 +494,12 @@ class AuthService extends ChangeNotifier {
 
   // Account Deletion
   Future<bool> deleteAccount() async {
+    if (!_ensureFirebaseAvailable('Account deletion')) {
+      return false;
+    }
+
     try {
-      await _firebaseAuth.currentUser?.delete();
+      await _firebaseAuth!.currentUser?.delete();
       await _clearUserData();
       _currentUser = null;
       _authState = AuthState.unauthenticated;
@@ -464,8 +530,12 @@ class AuthService extends ChangeNotifier {
 
   // Token Management (for API calls)
   Future<String?> getIdToken() async {
+    if (!_canUseFirebaseAuth) {
+      return null;
+    }
+
     try {
-      return await _firebaseAuth.currentUser?.getIdToken();
+      return await _firebaseAuth!.currentUser?.getIdToken();
     } catch (e) {
       debugPrint('Error getting ID token: $e');
       return null;
@@ -473,8 +543,12 @@ class AuthService extends ChangeNotifier {
   }
 
   Future<bool> refreshToken() async {
+    if (!_canUseFirebaseAuth) {
+      return false;
+    }
+
     try {
-      await _firebaseAuth.currentUser?.getIdToken(true);
+      await _firebaseAuth!.currentUser?.getIdToken(true);
       return true;
     } catch (e) {
       debugPrint('Error refreshing token: $e');

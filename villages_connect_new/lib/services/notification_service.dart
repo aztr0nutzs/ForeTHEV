@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter/services.dart';
 import 'package:timezone/timezone.dart' as tz;
 import 'package:timezone/data/latest.dart' as tz;
 import 'package:flutter_timezone/flutter_timezone.dart';
@@ -164,9 +165,16 @@ class NotificationService extends ChangeNotifier {
             requestSoundPermission: true,
           );
 
+      const LinuxInitializationSettings initializationSettingsLinux =
+          LinuxInitializationSettings(
+            defaultActionName: 'Open notification',
+          );
+
       const InitializationSettings initializationSettings = InitializationSettings(
         android: initializationSettingsAndroid,
         iOS: initializationSettingsIOS,
+        macOS: initializationSettingsIOS,
+        linux: initializationSettingsLinux,
       );
 
       await _flutterLocalNotificationsPlugin.initialize(
@@ -192,16 +200,40 @@ class NotificationService extends ChangeNotifier {
 
   Future<void> _initTimeZone() async {
     tz.initializeTimeZones();
-    final dynamic tzInfo = await FlutterTimezone.getLocalTimezone();
-    final String timeZoneName;
-    if (tzInfo is String) {
-      timeZoneName = tzInfo;
-    } else if (tzInfo is Map && tzInfo['name'] is String) {
-      timeZoneName = tzInfo['name'] as String;
-    } else {
-      timeZoneName = tz.local.name;
+
+    final timeZoneName = await _resolveLocalTimeZoneName();
+
+    try {
+      tz.setLocalLocation(tz.getLocation(timeZoneName));
+      debugPrint('Timezone initialized: $timeZoneName');
+    } catch (e) {
+      tz.setLocalLocation(tz.getLocation('UTC'));
+      debugPrint('Failed to load timezone "$timeZoneName", defaulting to UTC: $e');
     }
-    tz.setLocalLocation(tz.getLocation(timeZoneName));
+  }
+
+  Future<String> _resolveLocalTimeZoneName() async {
+    try {
+      final dynamic tzInfo = await FlutterTimezone.getLocalTimezone();
+      if (tzInfo is String && tzInfo.isNotEmpty) {
+        return tzInfo;
+      }
+      if (tzInfo is Map && tzInfo['name'] is String && (tzInfo['name'] as String).isNotEmpty) {
+        return tzInfo['name'] as String;
+      }
+    } on MissingPluginException catch (e) {
+      debugPrint('flutter_timezone plugin unavailable on this platform: $e');
+    } on PlatformException catch (e) {
+      debugPrint('Platform timezone lookup failed: $e');
+    } catch (e) {
+      debugPrint('Unexpected timezone lookup error: $e');
+    }
+
+    final systemGuess = DateTime.now().timeZoneName;
+    if (systemGuess.isNotEmpty) {
+      return systemGuess;
+    }
+    return 'UTC';
   }
 
   // Preferences Management
@@ -474,9 +506,18 @@ class NotificationService extends ChangeNotifier {
       presentSound: _preferences.soundEnabled,
     );
 
+    final linuxDetails = LinuxNotificationDetails(
+      defaultActionName: 'Open notification',
+      category: LinuxNotificationCategory.device,
+      urgency: LinuxNotificationUrgency.normal,
+      suppressSound: !_preferences.soundEnabled,
+    );
+
     return NotificationDetails(
       android: androidDetails,
       iOS: iosDetails,
+      macOS: iosDetails,
+      linux: linuxDetails,
     );
   }
 
@@ -499,8 +540,7 @@ class NotificationService extends ChangeNotifier {
       notification.body,
       scheduledDate,
       notificationDetails,
-      androidAllowWhileIdle: true,
-      uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
+      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
       payload: notification.payload,
     );
   }
